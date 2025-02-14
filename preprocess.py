@@ -11,12 +11,9 @@ import torch
 from tqdm import tqdm
 
 from config.model_config import AUDIO_CONFIG
-from config.pipeline_config import (
-    RAW_DATA_DIR,
-    PROCESSED_DATA_DIR,
-    PREPROCESSING_CONFIG
-)
+from config.pipeline_config import PREPROCESSING_CONFIG
 from utils.logging.logger import PipelineLogger
+from utils import file_manager
 
 
 def load_audio(
@@ -129,11 +126,17 @@ def main():
     """Main preprocessing pipeline."""
     with PipelineLogger("preprocess") as logger:
         try:
-            # Start pipeline
-            progress = logger.start_pipeline()
+            # Clean processed directory
+            logger.log_info("Cleaning processed directory...")
+            file_manager.clean_directory(
+                'datasets/processed', exclude=['*.gitkeep'])
+
+            # Get raw data directory
+            raw_dir = file_manager._get_dir_path('datasets')['raw']
+            processed_dir = file_manager._get_dir_path('datasets')['processed']
 
             # Get list of reciters
-            reciters = [d for d in RAW_DATA_DIR.iterdir() if d.is_dir()]
+            reciters = [d for d in raw_dir.iterdir() if d.is_dir()]
             total_reciters = len(reciters)
 
             logger.log_info(f"Found {total_reciters} reciters")
@@ -150,7 +153,7 @@ def main():
                 logger.log_info(f"Processing reciter: {reciter_name}")
 
                 # Create output directory
-                output_dir = PROCESSED_DATA_DIR / reciter_name
+                output_dir = processed_dir / reciter_name
                 output_dir.mkdir(parents=True, exist_ok=True)
 
                 # Get all audio files
@@ -216,8 +219,8 @@ def main():
                 logger.log_system_info()
 
             # Save metadata
-            with open(PROCESSED_DATA_DIR / 'metadata.json', 'w') as f:
-                json.dump(metadata, f, indent=4)
+            file_manager.save_metadata(
+                metadata, 'datasets/processed', 'metadata.json')
 
             logger.log_success("Preprocessing completed successfully")
 

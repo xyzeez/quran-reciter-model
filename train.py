@@ -14,20 +14,16 @@ import json
 from models.cnn import ReciterCNN
 from data.dataset import create_dataloaders
 from config.model_config import MODEL_CONFIG, TRAINING_CONFIG
-from config.pipeline_config import PROCESSED_DATA_DIR, RUNS_DIR, EXPERIMENT_CONFIG
+from config.pipeline_config import EXPERIMENT_CONFIG
 from utils.logging.logger import PipelineLogger
+from utils import file_manager
 
 
 class Trainer:
     """Model trainer class."""
 
     def __init__(self, model: nn.Module, config: dict = TRAINING_CONFIG):
-        """Initialize trainer.
-
-        Args:
-            model: Model to train
-            config: Training configuration
-        """
+        """Initialize trainer."""
         self.model = model
         self.config = config
 
@@ -69,10 +65,8 @@ class Trainer:
         self.best_val_loss = float('inf')
         self.patience_counter = 0
 
-        # Create experiment directory
-        self.timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
-        self.exp_dir = RUNS_DIR / f"experiment_{self.timestamp}"
-        self.exp_dir.mkdir(parents=True, exist_ok=True)
+        # Create run directory
+        self.run_dir = file_manager.create_run_directory()
 
         # Save configurations
         self.save_configs()
@@ -85,12 +79,9 @@ class Trainer:
             'experiment_config': EXPERIMENT_CONFIG
         }
 
-        config_dir = self.exp_dir / 'configs'
-        config_dir.mkdir(exist_ok=True)
-
         for name, config in configs.items():
-            with open(config_dir / f"{name}.json", 'w') as f:
-                json.dump(config, f, indent=4)
+            file_manager.save_metadata(config, str(
+                self.run_dir / 'configs'), f"{name}.json")
 
     def train_epoch(self, train_loader, logger) -> float:
         """Train for one epoch.
@@ -231,7 +222,7 @@ class Trainer:
             epoch: Current epoch number
             val_loss: Validation loss
         """
-        checkpoint_dir = self.exp_dir / 'checkpoints'
+        checkpoint_dir = self.run_dir / 'checkpoints'
         checkpoint_dir.mkdir(exist_ok=True)
 
         # Save checkpoint
@@ -322,8 +313,9 @@ def main():
 
             # Create data loaders
             logger.log_info("Creating data loaders...")
+            processed_dir = file_manager._get_dir_path('datasets')['processed']
             data_loaders = create_dataloaders(
-                PROCESSED_DATA_DIR,
+                processed_dir,
                 batch_size=TRAINING_CONFIG['batch_size']
             )
 
@@ -336,6 +328,9 @@ def main():
                 data_loaders['val'],
                 logger
             )
+
+            # Clean up old runs
+            file_manager.cleanup_old_runs(max_runs=5)
 
             logger.log_success("Training completed successfully")
 

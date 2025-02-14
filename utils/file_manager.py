@@ -5,7 +5,7 @@ File and directory management utilities for the Quran Reciter Identification pro
 import os
 import shutil
 from pathlib import Path
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Dict, Any
 import json
 import glob
 import logging
@@ -242,3 +242,69 @@ class FileManager:
             else:
                 dirs.append(path)
         return dirs
+
+    def get_raw_dataset_path(self) -> Path:
+        """Get the path to the raw dataset."""
+        # Try Google Drive path first
+        drive_path = Path('/content/drive/MyDrive/quran_reciter/datasets/raw')
+        if drive_path.exists():
+            return drive_path
+
+        # Fallback to local path
+        local_path = Path("D:/GP2/quran_reciter/datasets/raw")
+        if local_path.exists():
+            return local_path
+
+        raise FileNotFoundError(
+            f"Raw dataset directory not found at {drive_path} or {local_path}. "
+            "Please make sure the raw dataset exists in the correct location."
+        )
+
+    def get_processed_dir(self) -> Path:
+        """Get the path to the processed dataset directory."""
+        return self.required_dirs['datasets']['processed']
+
+    def clean_processed_dir(self) -> None:
+        """Clean the processed directory while preserving .gitkeep."""
+        processed_dir = self.get_processed_dir()
+        for item in processed_dir.iterdir():
+            if item.name != '.gitkeep':
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+
+    def get_reciters(self, raw_dir: Path) -> List[Path]:
+        """Get list of reciter directories.
+
+        Args:
+            raw_dir: Path to raw dataset directory
+
+        Returns:
+            List of reciter directory paths
+        """
+        return [d for d in raw_dir.iterdir() if d.is_dir()]
+
+    def create_reciter_output_dir(self, reciter_name: str) -> Path:
+        """Create output directory for a reciter.
+
+        Args:
+            reciter_name: Name of the reciter
+
+        Returns:
+            Path to the created directory
+        """
+        output_dir = self.get_processed_dir() / reciter_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def save_metadata(self, metadata: Dict[str, Any], output_dir: Path) -> None:
+        """Save preprocessing metadata.
+
+        Args:
+            metadata: Metadata dictionary
+            output_dir: Directory to save metadata in
+        """
+        metadata_file = output_dir / 'metadata.json'
+        with open(metadata_file, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=4, ensure_ascii=False)

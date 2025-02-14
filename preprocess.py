@@ -2,141 +2,107 @@
 Preprocessing script for the Quran Reciter Identification project.
 """
 
-import librosa
 import numpy as np
 from pathlib import Path
-import json
-from typing import Tuple, Optional
-import torch
-from tqdm import tqdm
+from typing import Dict, Any
 
-from config.model_config import AUDIO_CONFIG
 from config.pipeline_config import PREPROCESSING_CONFIG
 from utils.logging.logger import PipelineLogger
 from utils import file_manager
+from data.data_loader import AudioLoader
 
 
-def load_audio(
-    file_path: Path,
-    config: dict = PREPROCESSING_CONFIG
-) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
-    """Load and validate audio file.
-
-    Args:
-        file_path: Path to audio file
-        config: Preprocessing configuration
-
-    Returns:
-        Tuple of (audio_data, sample_rate, error_message)
-    """
-    try:
-        # Load audio with offset to skip bismillah
-        y, sr = librosa.load(
-            file_path,
-            sr=AUDIO_CONFIG['sample_rate'],
-            offset=config['skip_start'],
-            duration=config['max_duration']
-        )
-
-        # Check duration
-        duration = librosa.get_duration(y=y, sr=sr)
-        if duration < config['min_duration']:
-            return None, None, f"Audio too short: {duration:.2f}s"
-
-        return y, sr, None
-
-    except Exception as e:
-        return None, None, f"Error loading audio: {str(e)}"
-
-
-def process_audio(
-    audio: np.ndarray,
-    sr: int,
-    config: dict = PREPROCESSING_CONFIG
-) -> np.ndarray:
-    """Process audio data.
+def preprocess_reciter(
+    reciter_dir: Path,
+    output_dir: Path,
+    audio_loader: AudioLoader,
+    logger: PipelineLogger
+) -> Dict[str, Any]:
+    """Process all audio files for a single reciter.
 
     Args:
-        audio: Audio time series
-        sr: Sample rate
-        config: Preprocessing configuration
+        reciter_dir: Path to reciter's directory
+        output_dir: Path to output directory
+        audio_loader: AudioLoader instance
+        logger: Logger instance
 
     Returns:
-        Processed audio data
+        Statistics dictionary for the reciter
     """
-    # Remove silence
-    if config['remove_silence']:
-        non_silent = librosa.effects.split(
-            audio,
-            top_db=abs(config['silence_threshold']),
-            frame_length=2048,
-            hop_length=512
-        )
-        audio = np.concatenate([audio[start:end] for start, end in non_silent])
-
-    # Normalize audio
-    if config['normalize_audio']:
-        audio = librosa.util.normalize(audio)
-
-    return audio
-
-
-def extract_features(
-    audio: np.ndarray,
-    sr: int,
-    config: dict = AUDIO_CONFIG
-) -> np.ndarray:
-    """Extract mel spectrogram features.
-
-    Args:
-        audio: Audio time series
-        sr: Sample rate
-        config: Audio configuration
-
-    Returns:
-        Mel spectrogram features
-    """
-    # Extract mel spectrogram
-    mel_spec = librosa.feature.melspectrogram(
-        y=audio,
-        sr=sr,
-        n_mels=config['n_mels'],
-        n_fft=config['n_fft'],
-        hop_length=config['hop_length'],
-        win_length=config['win_length'],
-        window='hann',
-        center=True,
-        pad_mode='reflect',
-        power=config['power'],
-        fmin=config['f_min'],
-        fmax=config['f_max']
+    # Get all audio files
+    audio_files = list(reciter_dir.glob("*.mp3"))
+    process_task = logger.create_task(
+        f"Processing {reciter_dir.name}",
+        total=len(audio_files)
     )
 
-    # Convert to log scale
-    mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+    # Initialize statistics
+    stats = {
+        'total_files': len(audio_files),
+        'processed_files': 0,
+        'failed_files': [],
+        'total_duration': 0.0
+    }
 
-    # Normalize features
-    if PREPROCESSING_CONFIG['normalize_features']:
-        mel_spec = (mel_spec - mel_spec.mean()) / (mel_spec.std() + 1e-8)
+    # Process audio files
+    for audio_file in audio_files:
+        # Load audio
+        audio, sr, error = audio_loader.load_audio(audio_file)
+        if error:
+            logger.log_warning(error)
+            stats['failed_files'].append({
+                'file': str(audio_file),
+                'error': error
+            })
+            logger.update_task(process_task)
+            continue
 
-    return mel_spec
+        # Process audio
+        audio = audio_loader.process_audio(audio, sr)
+
+        # Extract features
+        features = audio_loader.extract_features(audio, sr)
+
+        # Save features
+        output_file = output_dir / f"{audio_file.stem}.npy"
+        np.save(output_file, features)
+
+        # Update statistics
+        stats['processed_files'] += 1
+        stats['total_duration'] += len(audio) / sr
+
+        # Update progress
+        logger.update_task(process_task)
+
+    # Log statistics
+    logger.log_stats({
+        'Total Files': stats['total_files'],
+        'Processed Files': stats['processed_files'],
+        'Failed Files': len(stats['failed_files']),
+        'Total Duration': f"{stats['total_duration']:.2f}s"
+    })
+
+    return stats
 
 
 def main():
     """Main preprocessing pipeline."""
     with PipelineLogger("preprocess") as logger:
         try:
+            # Initialize components
+            audio_loader = AudioLoader(PREPROCESSING_CONFIG)
+
+            # Get dataset paths
+            raw_dir = file_manager.get_raw_dataset_path()
+            logger.log_info(f"Using dataset from: {raw_dir}")
+
             # Clean processed directory
             logger.log_info("Cleaning processed directory...")
-            file_manager.clean_directory(
-                'datasets/processed', exclude=['*.gitkeep'])
-
-            # Get raw data directory
-            raw_dir = file_manager._get_dir_path('datasets')['raw']
-            processed_dir = file_manager._get_dir_path('datasets')['processed']
+            file_manager.clean_processed_dir()
+            processed_dir = file_manager.get_processed_dir()
 
             # Get list of reciters
-            reciters = [d for d in raw_dir.iterdir() if d.is_dir()]
+            reciters = file_manager.get_reciters(raw_dir)
             total_reciters = len(reciters)
 
             logger.log_info(f"Found {total_reciters} reciters")
@@ -153,61 +119,12 @@ def main():
                 logger.log_info(f"Processing reciter: {reciter_name}")
 
                 # Create output directory
-                output_dir = processed_dir / reciter_name
-                output_dir.mkdir(parents=True, exist_ok=True)
+                output_dir = file_manager.create_reciter_output_dir(
+                    reciter_name)
 
-                # Get all audio files
-                audio_files = list(reciter_dir.glob("*.mp3"))
-                process_task = logger.create_task(
-                    f"Processing {reciter_name}",
-                    total=len(audio_files)
-                )
-
-                # Initialize statistics
-                stats = {
-                    'total_files': len(audio_files),
-                    'processed_files': 0,
-                    'failed_files': [],
-                    'total_duration': 0.0
-                }
-
-                # Process audio files
-                for audio_file in audio_files:
-                    # Load audio
-                    audio, sr, error = load_audio(audio_file)
-                    if error:
-                        logger.log_warning(error)
-                        stats['failed_files'].append({
-                            'file': str(audio_file),
-                            'error': error
-                        })
-                        logger.update_task(process_task)
-                        continue
-
-                    # Process audio
-                    audio = process_audio(audio, sr)
-
-                    # Extract features
-                    features = extract_features(audio, sr)
-
-                    # Save features
-                    output_file = output_dir / f"{audio_file.stem}.npy"
-                    np.save(output_file, features)
-
-                    # Update statistics
-                    stats['processed_files'] += 1
-                    stats['total_duration'] += len(audio) / sr
-
-                    # Update progress
-                    logger.update_task(process_task)
-
-                # Log statistics
-                logger.log_stats({
-                    'Total Files': stats['total_files'],
-                    'Processed Files': stats['processed_files'],
-                    'Failed Files': len(stats['failed_files']),
-                    'Total Duration': f"{stats['total_duration']:.2f}s"
-                })
+                # Process reciter
+                stats = preprocess_reciter(
+                    reciter_dir, output_dir, audio_loader, logger)
 
                 # Update metadata
                 metadata['reciters'][reciter_name] = stats
@@ -219,9 +136,7 @@ def main():
                 logger.log_system_info()
 
             # Save metadata
-            file_manager.save_metadata(
-                metadata, 'datasets/processed', 'metadata.json')
-
+            file_manager.save_metadata(metadata, processed_dir)
             logger.log_success("Preprocessing completed successfully")
 
         except Exception as e:
